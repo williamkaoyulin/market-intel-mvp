@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Analyst Intelligence MVP</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">AI</div>
+          <div>
+            <div class="brand-title">Analyst Intel</div>
+            <div class="brand-subtitle">Sector Desk</div>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="主要導覽">
+          <button class="nav-item active" type="button" data-nav-action="home">Sectors</button>
+        </nav>
+
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h1 id="viewTitle">選擇板塊</h1>
+          </div>
+          <div id="toolbar" class="toolbar" role="group" aria-label="目前頁面工具"></div>
+        </header>
+
+        <section id="summaryGrid" class="summary-grid" aria-label="摘要"></section>
+        <div id="viewRoot"></div>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

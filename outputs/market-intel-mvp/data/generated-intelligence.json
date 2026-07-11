@@ -1,0 +1,34 @@
+{
+  "generatedAt": "2026-07-09T07:30:00Z",
+  "mode": "sample",
+  "evidence": [
+    {
+      "theme": "ASIC 接棒 GPU",
+      "source": "Morgan Stanley",
+      "type": "Broker Report",
+      "credibility": 88,
+      "title": "ASIC supply chain demand expands beyond GPU cycle",
+      "url": "https://www.alchip.com/en",
+      "matchedKeywords": [
+        "ASIC",
+        "custom chip",
+        "世芯"
+      ],
+      "published": "2026-07-09"
+    },
+    {
+      "theme": "AI CapEx 延續",
+      "source": "Earnings Transcript",
+      "type": "Transcript",
+      "credibility": 90,
+      "title": "Cloud capex remains focused on AI infrastructure",
+      "url": "https://investor.tsmc.com/english/quarterly-results/2026/q2",
+      "matchedKeywords": [
+        "AI capex",
+        "advanced packaging"
+      ],
+      "published": "2026-07-09"
+    }
+  ],
+  "errors": []
+}

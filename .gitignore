@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.DS_Store
+outputs/market-intel-mvp/data/live_snapshots.json

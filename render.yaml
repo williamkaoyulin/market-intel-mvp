@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: market-intel-mvp
+    env: python
+    rootDir: outputs/market-intel-mvp
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python live_server.py"
+    healthCheckPath: "/"
+    autoDeploy: true
