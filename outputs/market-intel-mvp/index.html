@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Analyst Intelligence MVP</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="v3.css?v=1">
   </head>
   <body>
     <div class="app">
@@ -18,7 +19,11 @@
         </div>
 
         <nav class="nav" aria-label="主要導覽">
-          <button class="nav-item active" type="button" data-nav-action="home">Sectors</button>
+          <button class="nav-item active" type="button" data-nav-action="home">板塊</button>
+          <button class="nav-item" type="button" data-nav-action="tracking">追蹤</button>
+          <button class="nav-item" type="button" data-nav-action="profile">設定</button>
+          <a class="nav-item nav-link" href="docs/analyst-intel-user-guide-zh-TW.pdf" target="_blank" rel="noopener noreferrer">使用說明</a>
+          <a class="nav-item nav-link" href="docs/analyst-intel-product-introduction-zh-TW.pdf" target="_blank" rel="noopener noreferrer">產品介紹</a>
         </nav>
 
       </aside>
@@ -36,7 +41,8 @@
       </main>
     </div>
 
+    <div id="overlayRoot"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="app-v2.js?v=1"></script>
+    <script src="app-v3.js?v=1"></script>
   </body>
 </html>
