@@ -464,6 +464,9 @@ function computeLiveRecommendation(item, sources) {
 
   const signal = evidenceSignal(liveItems);
   const netSignal = signal.positive - signal.negative;
+  if (netSignal === 0) {
+    return { ...item, liveReady: true, hasLiveEvidence: false, liveSources, liveItems };
+  }
   const side = signal.negative > signal.positive ? "Short" : "Long";
   const coverageScore = Math.min(30, liveSources.length * 8 + Math.min(liveItems.length, 9) * 2);
   const signalScore = Math.min(15, Math.abs(netSignal) * 4);
