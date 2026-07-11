@@ -1536,3 +1536,245 @@ h3 {
     font-size: 36px;
   }
 }
+
+.editable-sector-card {
+  position: relative;
+  display: grid;
+  min-height: 148px;
+  padding: 0;
+  overflow: hidden;
+  cursor: default;
+}
+
+.sector-card-open {
+  width: 100%;
+  min-width: 0;
+  min-height: 148px;
+  display: grid;
+  align-content: start;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 18px 76px 18px 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sector-card-open:hover {
+  background: #f8faf6;
+}
+
+.sector-card-open h2 {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.slot-label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.sector-edit-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  min-width: 48px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.sector-edit-btn:hover {
+  border-color: #91a79b;
+  background: #eef4ef;
+}
+
+.sector-edit-modal {
+  width: min(520px, calc(100vw - 28px));
+  display: grid;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.sector-edit-field {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.sector-edit-field input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+.sector-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.loading-panel {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 16px;
+}
+
+.loading-indicator {
+  width: 34px;
+  height: 34px;
+  border: 3px solid #d6ded8;
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: live-spin 0.9s linear infinite;
+}
+
+@keyframes live-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.market-board {
+  overflow: hidden;
+}
+
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.market-quote {
+  min-width: 0;
+  min-height: 168px;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcf9;
+  color: var(--ink);
+  padding: 14px;
+  text-decoration: none;
+}
+
+.market-quote:hover {
+  border-color: #91a79b;
+  background: #f4f8f4;
+}
+
+.market-quote-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.market-quote-head strong {
+  font-size: 18px;
+}
+
+.market-quote-head span,
+.market-quote small {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.market-quote h3 {
+  min-height: 40px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.market-price {
+  margin-top: 4px;
+  font-size: 25px;
+  font-weight: 850;
+}
+
+.market-change {
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.tag-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.score-evidence .tag-link {
+  margin: 3px;
+}
+
+@media (max-width: 1180px) {
+  .market-grid {
+    grid-template-columns: repeat(3, minmax(170px, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .editable-sector-card,
+  .sector-card-open {
+    min-height: 132px;
+  }
+
+  .sector-card-open {
+    padding: 16px 72px 16px 16px;
+  }
+
+  .market-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .market-quote {
+    min-height: 158px;
+  }
+
+  .sector-edit-modal {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 420px) {
+  .market-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .market-quote {
+    min-height: 144px;
+  }
+
+  .market-quote h3 {
+    min-height: 0;
+    font-size: 15px;
+  }
+
+  .sector-edit-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
