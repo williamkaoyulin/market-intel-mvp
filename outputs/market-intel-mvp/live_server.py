@@ -69,6 +69,15 @@ def is_search_or_redirect_url(url: str) -> bool:
     return any(domain in host for domain in ("google.com", "news.google.com", "yahoo.com/search"))
 
 
+def is_direct_source_url(url: str) -> bool:
+    if not url:
+        return False
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    return not is_search_or_redirect_url(url)
+
+
 def resolve_article_url(url: str) -> str:
     if not url:
         return url
@@ -106,6 +115,31 @@ def article_summary(url: str) -> str:
     return ""
 
 
+def parse_published(value: str) -> datetime | None:
+    try:
+        published_at = parsedate_to_datetime(clean(value))
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        return published_at.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def evidence_item(title: str, url: str, source: str, summary: str, published_at: datetime | None = None, published: str = "") -> dict:
+    now = datetime.now(timezone.utc)
+    if published_at is None:
+        published_at = now
+    return {
+        "title": clean(title),
+        "url": url,
+        "published": clean(published),
+        "publishedAt": published_at.isoformat(),
+        "ageHours": max(0, round((now - published_at).total_seconds() / 3600, 1)),
+        "source": clean(source),
+        "summary": clean(summary)[:260],
+    }
+
+
 def google_news_rss(query: str, hours: int = FRESHNESS_HOURS, limit: int = 10) -> list[dict]:
     when_term = "when:1d" if hours <= 24 else "when:7d"
     encoded = urllib.parse.quote(f"{query} stock OR earnings OR investor OR market {when_term}")
@@ -126,12 +160,8 @@ def google_news_rss(query: str, hours: int = FRESHNESS_HOURS, limit: int = 10) -
         link = clean(item.findtext("link") or "")
         description = clean(item.findtext("description") or "")
         published = clean(item.findtext("pubDate") or "")
-        try:
-            published_at = parsedate_to_datetime(published)
-            if published_at.tzinfo is None:
-                published_at = published_at.replace(tzinfo=timezone.utc)
-            published_at = published_at.astimezone(timezone.utc)
-        except Exception:
+        published_at = parse_published(published)
+        if published_at is None:
             continue
         if published_at < cutoff or published_at > now + timedelta(minutes=5):
             continue
@@ -139,23 +169,90 @@ def google_news_rss(query: str, hours: int = FRESHNESS_HOURS, limit: int = 10) -
         source = clean(source_node.text if source_node is not None else "Google News")
         if title and link:
             final_url = resolve_article_url(link)
-            if is_search_or_redirect_url(final_url):
+            if not is_direct_source_url(final_url):
                 continue
-            uses_redirect = False
-            display_url = final_url
-            summary = description
-            evidence.append({
-                "title": title,
-                "url": display_url,
-                "googleNewsUrl": link,
-                "resolvedUrl": final_url,
-                "usesRedirect": uses_redirect,
-                "published": published,
-                "publishedAt": published_at.isoformat(),
-                "ageHours": round((now - published_at).total_seconds() / 3600, 1),
-                "source": source,
-                "summary": summary[:260],
-            })
+            item_payload = evidence_item(title, final_url, source, description, published_at, published)
+            item_payload["googleNewsUrl"] = link
+            item_payload["resolvedUrl"] = final_url
+            evidence.append(item_payload)
+        if len(evidence) >= limit:
+            break
+    return evidence
+
+
+def stock_symbols_from_query(query: str) -> list[str]:
+    ignored = {"AI", "CEO", "ETF", "EPS", "USA", "USD", "THE", "AND", "OR"}
+    symbols = []
+    for token in re.findall(r"\b[A-Z][A-Z0-9.]{1,5}\b", query):
+        if token not in ignored:
+            symbols.append(token)
+    return list(dict.fromkeys(symbols))
+
+
+def yahoo_finance_rss(query: str, hours: int = FRESHNESS_HOURS, limit: int = 10) -> list[dict]:
+    symbols = stock_symbols_from_query(query)
+    if not symbols:
+        return []
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=hours)
+    evidence = []
+    for symbol in symbols[:4]:
+        rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={urllib.parse.quote(symbol)}&region=US&lang=en-US"
+        request = urllib.request.Request(rss_url, headers={"User-Agent": "AnalystIntelMVP/0.4"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                xml_text = response.read().decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        try:
+            root = ET.fromstring(xml_text)
+        except Exception:
+            continue
+        for item in root.findall(".//item"):
+            title = clean(item.findtext("title") or "")
+            link = clean(item.findtext("link") or "")
+            description = clean(item.findtext("description") or "")
+            published = clean(item.findtext("pubDate") or "")
+            published_at = parse_published(published)
+            if published_at is None or published_at < cutoff or published_at > now + timedelta(minutes=5):
+                continue
+            final_url = resolve_article_url(link)
+            if not title or not is_direct_source_url(final_url):
+                continue
+            evidence.append(evidence_item(title, final_url, "Yahoo Finance News", description, published_at, published))
+            if len(evidence) >= limit:
+                return evidence
+    return evidence
+
+
+def youtube_direct_results(query: str, limit: int = 10) -> list[dict]:
+    encoded = urllib.parse.quote_plus(f"{query} stock analysis")
+    url = f"https://www.youtube.com/results?search_query={encoded}&sp=EgIIAg%253D%253D"
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AnalystIntelMVP/0.4"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            html = response.read(900000).decode("utf-8", errors="replace")
+    except Exception:
+        return []
+
+    evidence = []
+    seen = set()
+    for match in re.finditer(r'"videoRenderer":\{"videoId":"([^"]+)".{0,5000}?"title":\{"runs":\[\{"text":"([^"]+)"\}', html):
+        video_id, raw_title = match.groups()
+        if video_id in seen:
+            continue
+        seen.add(video_id)
+        title = clean(raw_title.encode("utf-8").decode("unicode_escape", errors="ignore"))
+        if not title:
+            continue
+        channel_match = re.search(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', match.group(0))
+        channel = clean(channel_match.group(1)) if channel_match else "YouTube"
+        evidence.append(evidence_item(
+            title,
+            f"https://www.youtube.com/watch?v={video_id}",
+            channel,
+            "YouTube 影片搜尋結果，可直接開啟原始影片頁。",
+        ))
         if len(evidence) >= limit:
             break
     return evidence
@@ -184,16 +281,27 @@ def source_preview_payload(query: str, source_type: str) -> dict:
 
     used_query = preview_query
     evidence = []
-    for candidate in preview_query_variants(preview_query):
-        evidence = google_news_rss(candidate, hours=24, limit=3)
-        if evidence:
-            used_query = candidate
-            break
+    if "youtube" in source_type.lower():
+        for candidate in preview_query_variants(preview_query):
+            evidence = youtube_direct_results(candidate, limit=3)
+            if evidence:
+                used_query = candidate
+                break
+    else:
+        for candidate in preview_query_variants(preview_query):
+            evidence = google_news_rss(candidate, hours=24, limit=3)
+            if not evidence:
+                evidence = yahoo_finance_rss(candidate, hours=24, limit=3)
+            if evidence:
+                used_query = candidate
+                break
     window_hours = 24
     fallback_used = False
     if not evidence:
         for candidate in preview_query_variants(preview_query):
             evidence = google_news_rss(candidate, hours=168, limit=3)
+            if not evidence:
+                evidence = yahoo_finance_rss(candidate, hours=168, limit=3)
             if evidence:
                 used_query = candidate
                 window_hours = 168
@@ -314,7 +422,7 @@ def error_payload(query: str, error: str = "") -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send_json(self, payload: dict, status: int = 200) -> None:
+    def _send_json(self, payload: dict, status: int = 200, include_body: bool = True) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -326,20 +434,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         try:
             self.end_headers()
-            self.wfile.write(body)
+            if include_body:
+                self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             return
 
     def do_OPTIONS(self) -> None:
         self._send_json({"ok": True})
 
-    def _send_static(self, path: str) -> None:
+    def _send_static(self, path: str, include_body: bool = True) -> None:
         if path in {"", "/"}:
             path = "/index.html"
         relative = path.lstrip("/")
         file_path = (ROOT / relative).resolve()
         if not str(file_path).startswith(str(ROOT)) or not file_path.exists() or not file_path.is_file():
-            self._send_json({"error": "not found"}, 404)
+            self._send_json({"error": "not found"}, 404, include_body=include_body)
             return
         body = file_path.read_bytes()
         self.send_response(200)
@@ -347,7 +456,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if include_body:
+            self.wfile.write(body)
+
+    def do_HEAD(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            self._send_json({"ok": True}, include_body=False)
+            return
+        self._send_static(parsed.path, include_body=False)
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
