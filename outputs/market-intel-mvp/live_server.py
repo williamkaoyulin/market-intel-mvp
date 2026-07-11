@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import html as html_lib
 import json
 import math
@@ -1441,10 +1442,22 @@ class Handler(BaseHTTPRequestHandler):
             path = "/index.html"
         relative = path.lstrip("/")
         file_path = (ROOT / relative).resolve()
-        if not str(file_path).startswith(str(ROOT)) or not file_path.exists() or not file_path.is_file():
+        if not str(file_path).startswith(str(ROOT)):
             self._send_json({"error": "not found"}, 404, include_body=include_body)
             return
-        body = file_path.read_bytes()
+        body = None
+        if file_path.exists() and file_path.is_file():
+            body = file_path.read_bytes()
+        elif file_path.suffix.lower() == ".pdf":
+            encoded_path = Path(f"{file_path}.b64")
+            if encoded_path.exists() and encoded_path.is_file():
+                try:
+                    body = base64.b64decode(encoded_path.read_text(encoding="ascii"), validate=True)
+                except (ValueError, OSError):
+                    body = None
+        if body is None:
+            self._send_json({"error": "not found"}, 404, include_body=include_body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", STATIC_TYPES.get(file_path.suffix, "application/octet-stream"))
         self.send_header("Cache-Control", "no-store, max-age=0")
