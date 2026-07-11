@@ -393,11 +393,6 @@ function buildCustomSector() {
     recommendations: quotes.slice(0, 6).map((quote, index) => ({
       symbol: quote.symbol,
       name: quote.name,
-      side: index < 3 ? "建議做多研究" : "建議做空研究",
-      confidence: Math.max(50, 76 - index * 4),
-      rationale: index < 3
-        ? `Yahoo Finance 對「${state.customQuery}」找到此可交易候選。若新聞來源支持需求升溫，可優先做多研究。`
-        : `此候選排序較後或相關性較弱，若來源品質不足，可列為做空或避開研究。`,
       evidence: evidence[index]
         ? [`quote-${index}`, `yt-${index}`, `expert-${index}`, `analysis-${index}`, `live-${index}`]
         : [`quote-${index}`, `yt-${index}`, `expert-${index}`, `analysis-${index}`]
@@ -408,6 +403,109 @@ function buildCustomSector() {
       { thesis: `${state.customQuery} daily change`, window: freshness.date || "Live", result: freshness.changedFromPrevious === null || freshness.changedFromPrevious === undefined ? "No baseline" : freshness.changedFromPrevious ? "Changed" : "Same", hit: freshness.changedFromPrevious ? "Positive" : "Needs Review", note: freshness.previousDate ? `相較 ${freshness.previousDate} 的來源與股票 signature。` : "尚無前一日 baseline。" }
     ]
   };
+}
+
+const positiveSignalTerms = [
+  "beat", "beats", "raise", "raises", "raised", "upgrade", "buy", "outperform", "growth", "demand",
+  "surge", "record", "strong", "upside", "profit", "margin", "bullish", "contract", "win", "wins",
+  "expand", "expands", "approved", "partnership", "rally", "higher", "positive", "受益", "成長",
+  "上調", "買進", "看多", "強勁", "需求", "獲利", "訂單", "突破"
+];
+
+const negativeSignalTerms = [
+  "miss", "misses", "cut", "cuts", "downgrade", "sell", "underperform", "weak", "falls", "plunge",
+  "risk", "lawsuit", "probe", "delay", "loss", "slowdown", "lower", "bearish", "tariff", "pressure",
+  "debt", "bankrupt", "recall", "negative", "下修", "賣出", "看空", "疲弱", "風險", "虧損",
+  "放緩", "壓力", "調查", "延遲", "下跌"
+];
+
+function previewForSource(source) {
+  if (source.previewItems) return { items: source.previewItems, windowHours: 24, fallbackUsed: false };
+  return state.sourcePreviews[sourcePreviewKey(source)];
+}
+
+function evidenceSourcesForItem(item, sources) {
+  return (item.evidence || [])
+    .map((id) => sources.find((source) => source.id === id))
+    .filter(Boolean);
+}
+
+function usablePreviewItems(source) {
+  const preview = previewForSource(source);
+  if (!sourceHasUsablePreview(preview)) return [];
+  return (preview.items || []).filter((item) => item.url && item.title);
+}
+
+function countTerms(text, terms) {
+  const normalized = text.toLowerCase();
+  return terms.reduce((total, term) => total + (normalized.includes(term.toLowerCase()) ? 1 : 0), 0);
+}
+
+function evidenceSignal(items) {
+  return items.reduce((signal, item) => {
+    const text = `${item.title || ""} ${item.summary || ""}`;
+    signal.positive += countTerms(text, positiveSignalTerms);
+    signal.negative += countTerms(text, negativeSignalTerms);
+    return signal;
+  }, { positive: 0, negative: 0 });
+}
+
+function computeLiveRecommendation(item, sources) {
+  const evidenceSources = evidenceSourcesForItem(item, sources);
+  const previewSources = evidenceSources.filter((source) => source.previewQuery || source.previewItems);
+  const resolvedSources = previewSources.filter((source) => previewForSource(source));
+  const liveReady = resolvedSources.length === previewSources.length;
+  const liveSources = previewSources.filter((source) => usablePreviewItems(source).length);
+  const liveItems = liveSources.flatMap((source) => usablePreviewItems(source).slice(0, 3));
+
+  if (!liveItems.length) {
+    return { ...item, liveReady, hasLiveEvidence: false, liveSources: [], liveItems: [] };
+  }
+
+  const signal = evidenceSignal(liveItems);
+  const netSignal = signal.positive - signal.negative;
+  const side = signal.negative > signal.positive ? "Short" : "Long";
+  const coverageScore = Math.min(30, liveSources.length * 8 + Math.min(liveItems.length, 9) * 2);
+  const signalScore = Math.min(15, Math.abs(netSignal) * 4);
+  const ages = liveItems.map((sourceItem) => Number(sourceItem.ageHours)).filter(Number.isFinite);
+  const newestAge = ages.length ? Math.min(...ages) : 24;
+  const freshnessScore = Math.max(0, 10 - Math.min(10, Math.floor(newestAge / 12)));
+  const confidence = Math.max(50, Math.min(95, Math.round(50 + coverageScore + signalScore + freshnessScore)));
+  const rationale = `根據 ${liveItems.length} 則可直接開啟的即時來源計算；正向訊號 ${signal.positive}、負向訊號 ${signal.negative}，方向判定為 ${side === "Short" ? "做空" : "做多"}研究。`;
+
+  return {
+    ...item,
+    side,
+    confidence,
+    rationale,
+    liveReady: true,
+    hasLiveEvidence: true,
+    liveSources,
+    liveItems,
+    livePositive: signal.positive,
+    liveNegative: signal.negative,
+    liveCoverage: coverageScore,
+    liveSignalScore: signalScore,
+    liveFreshness: freshnessScore
+  };
+}
+
+function liveRecommendationsForSector(sector) {
+  const computed = sector.recommendations.map((item) => computeLiveRecommendation(item, sector.sources));
+  return {
+    ready: computed.every((item) => item.liveReady),
+    items: computed.filter((item) => item.hasLiveEvidence)
+  };
+}
+
+function renderRecommendationList(liveRecommendations, sources) {
+  if (liveRecommendations.items.length) {
+    return liveRecommendations.items.map((item) => renderRecommendation(item, sources)).join("");
+  }
+  if (!liveRecommendations.ready) {
+    return renderEmpty("正在根據可開啟的即時來源計算 Long / Short。");
+  }
+  return renderEmpty("沒有足夠可直接開啟的即時來源，因此不產生 Long / Short 建議。");
 }
 
 function renderMetricTiles(items) {
@@ -489,8 +587,8 @@ function renderSectorHomeCard(sector) {
         <h2>${sector.name}</h2>
         <div class="sector-card-stats">
           <span>來源 ${sourceCount(sector)}</span>
-          <span>Long ${sector.recommendations.filter((item) => item.side.toLowerCase().includes("long")).length}</span>
-          <span>Short ${sector.recommendations.filter((item) => item.side.toLowerCase().includes("short")).length}</span>
+          <span>候選 ${sector.recommendations.length}</span>
+          <span>即時計算</span>
         </div>
       </div>
       <div class="sector-card-meta">
@@ -538,6 +636,7 @@ async function fetchCustomSector() {
 
 function renderSectorDetail() {
   const sector = currentSector();
+  const liveRecommendations = liveRecommendationsForSector(sector);
   viewTitle.textContent = sector.name;
 
   const types = sourceTypes(sector.sources);
@@ -551,7 +650,7 @@ function renderSectorDetail() {
     { label: "板塊分數", value: sector.score },
     { label: "動能", value: sector.momentum },
     { label: "來源數", value: filteredSources.length },
-    { label: "建議數", value: sector.recommendations.length }
+    { label: "建議數", value: liveRecommendations.ready ? liveRecommendations.items.length : "計算中" }
   ]);
 
   viewRoot.innerHTML = `
@@ -577,7 +676,7 @@ function renderSectorDetail() {
           <div class="section-head">
             <h2>2. Long / Short 研究建議</h2>
           </div>
-          <div class="recommendation-list">${sector.recommendations.map((item) => renderRecommendation(item, sector.sources)).join("") || renderEmpty("沒有真實來源，因此不產生建議。")}</div>
+          <div class="recommendation-list">${renderRecommendationList(liveRecommendations, sector.sources)}</div>
         </section>
       </div>
 
@@ -596,7 +695,7 @@ function renderSectorDetail() {
     ${renderScoreModal()}
   `;
   hydrateSourcePreviews(filteredSources);
-  wireScoreButtons(sector);
+  wireScoreButtons(liveRecommendations.items, sector.sources);
   wireScoreModal();
 }
 
@@ -666,7 +765,10 @@ async function hydrateSourcePreviews(sources) {
   const targets = sources
     .filter((source) => source.previewQuery && !state.sourcePreviews[sourcePreviewKey(source)])
     .slice(0, 18);
-  if (!targets.length) return;
+  if (!targets.length) {
+    refreshRecommendationList();
+    return;
+  }
   await Promise.allSettled(targets.map(async (source) => {
     const key = sourcePreviewKey(source);
     try {
@@ -675,7 +777,9 @@ async function hydrateSourcePreviews(sources) {
       state.sourcePreviews[key] = { items: [], errors: [String(error)] };
     }
     updateSourcePreview(source);
+    refreshRecommendationList();
   }));
+  refreshRecommendationList();
 }
 
 function updateSourcePreview(source) {
@@ -706,11 +810,27 @@ function refreshSourceListState() {
   }
 }
 
+function refreshRecommendationList() {
+  if (state.layer !== "sector") return;
+  const sector = currentSector();
+  const liveRecommendations = liveRecommendationsForSector(sector);
+  const list = document.querySelector(".recommendation-list");
+  if (list) {
+    list.innerHTML = renderRecommendationList(liveRecommendations, sector.sources);
+    wireScoreButtons(liveRecommendations.items, sector.sources);
+  }
+  const metricTiles = summaryGrid.querySelectorAll(".metric-tile strong");
+  if (metricTiles[3]) metricTiles[3].textContent = liveRecommendations.ready ? liveRecommendations.items.length : "計算中";
+  if (state.scoreModal && !liveRecommendations.items.some((item) => item.symbol === state.scoreModal.item.symbol)) {
+    state.scoreModal = null;
+  }
+}
+
 function renderRecommendation(item, sources) {
-  const isShort = item.side.toLowerCase().includes("short") || item.side.includes("做空");
+  const isShort = item.side === "Short";
   const sideClass = isShort ? "short" : "long";
   const sideLabel = isShort ? "建議做空研究" : "建議做多研究";
-  const evidenceLinks = item.evidence.map((id) => sources.find((source) => source.id === id)).filter(Boolean);
+  const evidenceLinks = item.liveSources || evidenceSourcesForItem(item, sources);
   return `
     <article class="recommendation-card ${sideClass}">
       <div class="recommendation-head">
@@ -727,24 +847,21 @@ function renderRecommendation(item, sources) {
           </span>
         `).join("") || '<span class="tag">尚無直接新聞來源對應</span>'}
       </div>
+      <p>${item.rationale}</p>
     </article>
   `;
 }
 
 function scoreBreakdown(item, sources) {
-  const evidenceLinks = item.evidence.map((id) => sources.find((source) => source.id === id)).filter(Boolean);
-  const isShort = item.side.toLowerCase().includes("short") || item.side.includes("做空");
-  const base = 50;
-  const sourceScore = Math.min(18, evidenceLinks.length * 4);
-  const sideScore = isShort ? 6 : 10;
-  const adjustment = item.confidence - base - sourceScore - sideScore;
+  const evidenceLinks = item.liveSources || evidenceSourcesForItem(item, sources);
   return {
     total: item.confidence,
     rows: [
-      { label: "基礎分", value: base, note: "可交易標的進入研究清單的起始分。" },
-      { label: "來源覆蓋", value: sourceScore, note: `${evidenceLinks.length} 類佐證來源，每類最多加分。` },
-      { label: "方向訊號", value: sideScore, note: isShort ? "做空研究通常要求更高風險折扣，因此方向加分較保守。" : "做多研究若與板塊主線一致，方向加分較高。" },
-      { label: "人工/風險調整", value: adjustment, note: item.rationale }
+      { label: "基礎分", value: 50, note: "只有找到可直接開啟的來源後才會進入研究清單。" },
+      { label: "來源覆蓋", value: item.liveCoverage || 0, note: `${evidenceLinks.length} 類可用來源、${(item.liveItems || []).length} 則內容納入計算。` },
+      { label: "訊號強度", value: item.liveSignalScore || 0, note: `正向 ${item.livePositive || 0}、負向 ${item.liveNegative || 0}，用標題與摘要關鍵詞估算。` },
+      { label: "新鮮度", value: item.liveFreshness || 0, note: "越接近近 24 小時的新來源，加分越高。" },
+      { label: "方向", value: item.side === "Short" ? "做空" : "做多", note: item.rationale }
     ],
     evidenceLinks
   };
@@ -769,7 +886,7 @@ function renderScoreModal() {
           ${breakdown.rows.map((row) => `
             <div class="score-row">
               <strong>${row.label}</strong>
-              <span>${row.value > 0 ? "+" : ""}${row.value}</span>
+              <span>${typeof row.value === "number" ? `${row.value > 0 ? "+" : ""}${row.value}` : row.value}</span>
               <small>${row.note}</small>
             </div>
           `).join("")}
@@ -782,12 +899,12 @@ function renderScoreModal() {
   `;
 }
 
-function wireScoreButtons(sector) {
+function wireScoreButtons(items, sources) {
   document.querySelectorAll("[data-score-symbol]").forEach((button) => {
     button.addEventListener("click", () => {
-      const item = sector.recommendations.find((candidate) => candidate.symbol === button.dataset.scoreSymbol);
+      const item = items.find((candidate) => candidate.symbol === button.dataset.scoreSymbol);
       if (!item) return;
-      state.scoreModal = { item, sources: sector.sources };
+      state.scoreModal = { item, sources };
       renderSectorDetail();
     });
   });
