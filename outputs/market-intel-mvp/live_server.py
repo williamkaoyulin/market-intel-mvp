@@ -1452,7 +1452,8 @@ class Handler(BaseHTTPRequestHandler):
             encoded_path = Path(f"{file_path}.b64")
             if encoded_path.exists() and encoded_path.is_file():
                 try:
-                    body = base64.b64decode(encoded_path.read_text(encoding="ascii"), validate=True)
+                    encoded = re.sub(r"\s+", "", encoded_path.read_text(encoding="ascii"))
+                    body = base64.b64decode(encoded, validate=True)
                 except (ValueError, OSError):
                     body = None
         if body is None:
