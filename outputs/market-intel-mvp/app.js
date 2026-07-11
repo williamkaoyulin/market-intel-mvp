@@ -299,7 +299,7 @@ function freshSourcesForRecommendation(item, sectorName) {
       label: `${item.symbol} 近24h新聞`,
       url: "",
       previewQuery: query,
-      note: "Google News 近 24 小時；若當天新聞量不足，可用備援放寬時間窗。",
+      note: "近 24 小時直連新聞；若當天新聞量不足，備援會延伸時間窗但仍保留原始連結。",
       actions: []
     },
     {
@@ -308,7 +308,7 @@ function freshSourcesForRecommendation(item, sectorName) {
       label: `${item.symbol} 近24h YouTube`,
       url: "",
       previewQuery: query,
-      note: "Google 影片近 24 小時搜尋；比限定單一 YouTube URL 格式更不容易空白。",
+      note: "YouTube 影片直連；顯示可直接開啟的 watch 連結。",
       actions: []
     },
     {
@@ -317,7 +317,7 @@ function freshSourcesForRecommendation(item, sectorName) {
       label: `${item.symbol} 近24h專家分析`,
       url: "",
       previewQuery: query,
-      note: "近 24 小時市場觀點與分析師評論；若太少則用備援延伸到 7 天或常用分析站。",
+      note: "市場觀點與分析師評論；只保留可直接開啟的原始連結。",
       actions: []
     }
   ];
@@ -361,7 +361,7 @@ function buildCustomSector() {
     label: `${quote.symbol} 近24h YouTube`,
     url: "",
     previewQuery: `${quote.symbol} ${quote.name} stock investment analysis`,
-    note: "Google 影片近 24 小時搜尋；若當天影片不足，可用備援放寬。",
+    note: "YouTube 影片直連；只顯示可直接開啟的 watch 連結。",
     actions: []
   }));
   const expertSources = quotes.slice(0, 6).flatMap((quote, index) => ([
@@ -371,7 +371,7 @@ function buildCustomSector() {
       label: `${quote.symbol} 近24h專家分析`,
       url: "",
       previewQuery: `${quote.symbol} ${quote.name} stock investment analysis`,
-      note: "近 24 小時市場觀點與分析師評論；若太少則用備援延伸。",
+      note: "市場觀點與分析師評論；只保留可直接開啟的原始連結。",
       actions: []
     },
     {
@@ -380,7 +380,7 @@ function buildCustomSector() {
       label: `${quote.symbol} 近24h市場新聞`,
       url: "",
       previewQuery: `${quote.symbol} ${quote.name} stock market`,
-      note: "Google News 近 24 小時；若當天新聞量不足，可用備援放寬。",
+      note: "近 24 小時直連新聞；若當天新聞量不足，備援會延伸時間窗但仍保留原始連結。",
       actions: []
     }
   ]));
