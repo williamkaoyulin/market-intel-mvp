@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+import math
 import os
 import re
+import statistics
 import sys
 import threading
 import time
@@ -23,12 +25,14 @@ ROOT = Path(__file__).resolve().parent
 SNAPSHOT_PATH = ROOT / "data" / "live_snapshots.json"
 FRESHNESS_HOURS = 24
 MIN_SOCIAL_AUDIENCE = 10_000
-CACHE_SECONDS = 60
+CACHE_SECONDS = 300
+SYMBOL_CACHE_SECONDS = 900
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".json": "application/json; charset=utf-8",
+    ".pdf": "application/pdf",
     ".txt": "text/plain; charset=utf-8",
 }
 
@@ -88,6 +92,8 @@ GENERIC_INDUSTRY_WORDS = {
 
 _cache: dict[str, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
+_symbol_cache: dict[str, tuple[float, dict]] = {}
+_symbol_cache_lock = threading.Lock()
 _snapshot_lock = threading.Lock()
 _gdelt_lock = threading.Lock()
 _gdelt_last_request = 0.0
@@ -222,11 +228,20 @@ def classify_news(url: str) -> tuple[str, float]:
 
 
 def profile_for_query(query: str) -> dict:
-    lower = f" {query.lower()} "
+    lower = clean(query).lower()
     for profile in THEME_PROFILES:
-        if any(needle.lower() in lower or needle in query for needle in profile["needles"]):
+        if any(theme_needle_matches(lower, needle) for needle in profile["needles"]):
             return profile
     return {"needles": (), "terms": (query,), "symbols": ()}
+
+
+def theme_needle_matches(query: str, needle: str) -> bool:
+    needle = clean(needle).lower()
+    if not needle:
+        return False
+    if re.fullmatch(r"[a-z0-9.+ -]+", needle):
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", query))
+    return needle in query
 
 
 def topic_tokens(query: str, profile: dict) -> list[str]:
@@ -523,6 +538,330 @@ def nasdaq_quote_profile(symbol: str, fallback: dict | None = None) -> dict | No
     }
 
 
+def parse_financial_value(value: str) -> float | None:
+    text = clean(value).replace(",", "")
+    if not text or text in {"--", "N/A"}:
+        return None
+    negative = text.startswith("-") or (text.startswith("(") and text.endswith(")"))
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    number = float(match.group(0))
+    return -number if negative else number
+
+
+def table_row(table: dict, label: str) -> dict:
+    for row in (table or {}).get("rows") or []:
+        if clean(row.get("value1", "")).casefold() == label.casefold():
+            return row
+    return {}
+
+
+def row_number(table: dict, label: str, key: str = "value2") -> float | None:
+    return parse_financial_value(table_row(table, label).get(key, ""))
+
+
+def percent_change(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous in {None, 0}:
+        return None
+    return round((current / previous - 1) * 100, 2)
+
+
+def ratio_percent(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator in {None, 0}:
+        return None
+    return round(numerator / denominator * 100, 2)
+
+
+def nasdaq_summary_data(symbol: str) -> dict:
+    url = f"https://api.nasdaq.com/api/quote/{urllib.parse.quote(symbol)}/summary?assetclass=stocks"
+    try:
+        payload = request_json(url, timeout=13)
+    except Exception:
+        return {}
+    summary = ((payload.get("data") or {}).get("summaryData") or {})
+
+    def value(key: str) -> str:
+        row = summary.get(key) or {}
+        return clean(row.get("value", "")) if isinstance(row, dict) else ""
+
+    target = parse_price(value("OneYrTarget"))
+    market_cap = parse_financial_value(value("MarketCap"))
+    return {
+        "oneYearTarget": target,
+        "oneYearTargetLabel": value("OneYrTarget"),
+        "marketCap": market_cap,
+        "dividendYieldPercent": parse_price(value("Yield")),
+        "annualizedDividend": parse_price(value("AnnualizedDividend")),
+        "previousClose": parse_price(value("PreviousClose")),
+        "averageVolume": parse_financial_value(value("AverageVolume")),
+        "shareVolume": parse_financial_value(value("ShareVolume")),
+        "exDividendDate": value("ExDividendDate"),
+        "sourceUrl": f"https://www.nasdaq.com/market-activity/stocks/{symbol.lower()}",
+    }
+
+
+def nasdaq_financial_data(symbol: str) -> dict:
+    url = f"https://api.nasdaq.com/api/company/{urllib.parse.quote(symbol)}/financials?frequency=1"
+    try:
+        payload = request_json(url, timeout=15)
+    except Exception:
+        return {}
+    data = payload.get("data") or {}
+    income = data.get("incomeStatementTable") or {}
+    balance = data.get("balanceSheetTable") or {}
+    cash_flow = data.get("cashFlowTable") or {}
+    headers = income.get("headers") or {}
+    if not (income.get("rows") or []):
+        return {}
+
+    revenue = row_number(income, "Total Revenue")
+    prior_revenue = row_number(income, "Total Revenue", "value3")
+    gross_profit = row_number(income, "Gross Profit")
+    operating_income = row_number(income, "Operating Income")
+    prior_operating_income = row_number(income, "Operating Income", "value3")
+    net_income = row_number(income, "Net Income")
+    operating_cash = row_number(cash_flow, "Net Cash Flow-Operating")
+    capital_expenditures = row_number(cash_flow, "Capital Expenditures")
+    free_cash_flow = None
+    if operating_cash is not None and capital_expenditures is not None:
+        free_cash_flow = round(operating_cash + capital_expenditures, 2)
+    cash = row_number(balance, "Cash and Cash Equivalents")
+    short_debt = row_number(balance, "Short-Term Debt / Current Portion of Long-Term Debt")
+    long_debt = row_number(balance, "Long-Term Debt")
+    total_debt = None
+    if short_debt is not None or long_debt is not None:
+        total_debt = round((short_debt or 0) + (long_debt or 0), 2)
+
+    operating_margin = ratio_percent(operating_income, revenue)
+    prior_operating_margin = ratio_percent(prior_operating_income, prior_revenue)
+    margin_change = None
+    if operating_margin is not None and prior_operating_margin is not None:
+        margin_change = round(operating_margin - prior_operating_margin, 2)
+
+    annual_series = []
+    for key in ("value5", "value4", "value3", "value2"):
+        period = clean(headers.get(key, ""))
+        period_revenue = row_number(income, "Total Revenue", key)
+        period_net_income = row_number(income, "Net Income", key)
+        period_operating_cash = row_number(cash_flow, "Net Cash Flow-Operating", key)
+        period_capex = row_number(cash_flow, "Capital Expenditures", key)
+        period_fcf = None
+        if period_operating_cash is not None and period_capex is not None:
+            period_fcf = round(period_operating_cash + period_capex, 2)
+        if period and period_revenue is not None:
+            annual_series.append({
+                "period": period,
+                "revenueThousands": period_revenue,
+                "netIncomeThousands": period_net_income,
+                "freeCashFlowThousands": period_fcf,
+            })
+
+    return {
+        "periodEnd": clean(headers.get("value2", "")),
+        "priorPeriodEnd": clean(headers.get("value3", "")),
+        "unit": "USD thousands",
+        "revenueThousands": revenue,
+        "revenueGrowthPercent": percent_change(revenue, prior_revenue),
+        "grossMarginPercent": ratio_percent(gross_profit, revenue),
+        "operatingMarginPercent": operating_margin,
+        "operatingMarginChangePoints": margin_change,
+        "netMarginPercent": ratio_percent(net_income, revenue),
+        "freeCashFlowThousands": free_cash_flow,
+        "freeCashFlowMarginPercent": ratio_percent(free_cash_flow, revenue),
+        "cashThousands": cash,
+        "totalDebtThousands": total_debt,
+        "netDebtThousands": None if total_debt is None else round(total_debt - (cash or 0), 2),
+        "annualSeries": annual_series,
+        "sourceUrl": f"https://www.nasdaq.com/market-activity/stocks/{symbol.lower()}/financials",
+        "provider": "Nasdaq reported financials",
+    }
+
+
+def historical_return(points: list[dict], days: int) -> float | None:
+    if len(points) < 2:
+        return None
+    latest = points[-1]
+    target = latest["dateValue"] - timedelta(days=days)
+    candidates = [point for point in points if point["dateValue"] <= target]
+    base = candidates[-1] if candidates else points[0]
+    if base["close"] in {None, 0}:
+        return None
+    return round((latest["close"] / base["close"] - 1) * 100, 2)
+
+
+def nasdaq_history_data(symbol: str) -> dict:
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=370)
+    params = urllib.parse.urlencode({
+        "assetclass": "stocks",
+        "fromdate": start.isoformat(),
+        "todate": today.isoformat(),
+        "limit": 5000,
+    })
+    url = f"https://api.nasdaq.com/api/quote/{urllib.parse.quote(symbol)}/historical?{params}"
+    try:
+        payload = request_json(url, timeout=16)
+    except Exception:
+        return {}
+    rows = (((payload.get("data") or {}).get("tradesTable") or {}).get("rows") or [])
+    points = []
+    for row in rows:
+        try:
+            date_value = datetime.strptime(clean(row.get("date", "")), "%m/%d/%Y").date()
+        except ValueError:
+            continue
+        close_value = parse_price(row.get("close", ""))
+        if close_value is None:
+            continue
+        points.append({
+            "date": date_value.isoformat(),
+            "dateValue": date_value,
+            "close": close_value,
+            "high": parse_price(row.get("high", "")),
+            "low": parse_price(row.get("low", "")),
+            "volume": parse_financial_value(row.get("volume", "")),
+        })
+    points.sort(key=lambda item: item["dateValue"])
+    if not points:
+        return {}
+
+    closes = [point["close"] for point in points]
+    daily_returns = [closes[index] / closes[index - 1] - 1 for index in range(1, len(closes)) if closes[index - 1]]
+    recent_returns = daily_returns[-20:]
+    volatility = None
+    if len(recent_returns) >= 2:
+        volatility = round(statistics.stdev(recent_returns) * math.sqrt(252) * 100, 2)
+
+    peak = closes[0]
+    max_drawdown = 0.0
+    for price in closes:
+        peak = max(peak, price)
+        drawdown = (price / peak - 1) * 100 if peak else 0
+        max_drawdown = min(max_drawdown, drawdown)
+
+    recent20 = points[-20:]
+    recent_closes = [point["close"] for point in recent20]
+    sorted_recent = sorted(recent_closes)
+    index25 = max(0, int((len(sorted_recent) - 1) * 0.25))
+    index75 = max(0, int((len(sorted_recent) - 1) * 0.75))
+    low52 = min(closes)
+    high52 = max(closes)
+    latest_close = closes[-1]
+    percentile = None if high52 == low52 else round((latest_close - low52) / (high52 - low52) * 100, 1)
+
+    return {
+        "asOf": points[-1]["date"],
+        "latestClose": latest_close,
+        "returns": {
+            "oneWeek": historical_return(points, 7),
+            "oneMonth": historical_return(points, 30),
+            "threeMonths": historical_return(points, 90),
+            "oneYear": historical_return(points, 365),
+        },
+        "annualizedVolatility20dPercent": volatility,
+        "maxDrawdown1yPercent": round(max_drawdown, 2),
+        "low20d": min(recent_closes),
+        "high20d": max(recent_closes),
+        "average20d": round(sum(recent_closes) / len(recent_closes), 2),
+        "lowerQuartile20d": sorted_recent[index25],
+        "upperQuartile20d": sorted_recent[index75],
+        "low52Week": low52,
+        "high52Week": high52,
+        "pricePercentile52Week": percentile,
+        "series": [{"date": point["date"], "close": point["close"]} for point in points[-60:]],
+        "sourceUrl": f"https://www.nasdaq.com/market-activity/stocks/{symbol.lower()}/historical",
+    }
+
+
+def nasdaq_analyst_data(symbol: str) -> dict:
+    url = f"https://api.nasdaq.com/api/analyst/{urllib.parse.quote(symbol)}/ratings"
+    try:
+        payload = request_json(url, timeout=12)
+    except Exception:
+        return {}
+    data = payload.get("data") or {}
+    summary = clean(data.get("ratingsSummary", ""))
+    coverage_match = re.search(r"(\d+)\s+analysts?", summary, flags=re.IGNORECASE)
+    return {
+        "meanRating": clean(data.get("meanRatingType", "")),
+        "analystCount": int(coverage_match.group(1)) if coverage_match else None,
+        "summary": summary,
+        "sourceUrl": f"https://www.nasdaq.com/market-activity/stocks/{symbol.lower()}/analyst-research",
+    }
+
+
+def nasdaq_earnings_data(symbol: str) -> dict:
+    url = f"https://api.nasdaq.com/api/company/{urllib.parse.quote(symbol)}/earnings-surprise"
+    try:
+        payload = request_json(url, timeout=12)
+    except Exception:
+        return {}
+    rows = ((((payload.get("data") or {}).get("earningsSurpriseTable") or {}).get("rows")) or [])[:4]
+    surprises = []
+    normalized_rows = []
+    for row in rows:
+        surprise = parse_financial_value(str(row.get("percentageSurprise", "")))
+        if surprise is not None:
+            surprises.append(surprise)
+        normalized_rows.append({
+            "fiscalQuarter": clean(str(row.get("fiscalQtrEnd", ""))),
+            "dateReported": clean(str(row.get("dateReported", ""))),
+            "eps": row.get("eps"),
+            "consensusForecast": clean(str(row.get("consensusForecast", ""))),
+            "surprisePercent": surprise,
+        })
+    return {
+        "latest": normalized_rows[0] if normalized_rows else None,
+        "averageSurprisePercent": round(sum(surprises) / len(surprises), 2) if surprises else None,
+        "beatCount": sum(1 for value in surprises if value > 0),
+        "reportedCount": len(surprises),
+        "rows": normalized_rows,
+        "sourceUrl": f"https://www.nasdaq.com/market-activity/stocks/{symbol.lower()}/earnings",
+    }
+
+
+def nasdaq_decision_data(symbol: str, current_price: float | None) -> dict:
+    cache_key = symbol.upper()
+    with _symbol_cache_lock:
+        cached = _symbol_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] <= SYMBOL_CACHE_SECONDS:
+            base = cached[1]
+        else:
+            base = None
+
+    if base is None:
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            tasks = {
+                "valuation": executor.submit(nasdaq_summary_data, symbol),
+                "fundamentals": executor.submit(nasdaq_financial_data, symbol),
+                "history": executor.submit(nasdaq_history_data, symbol),
+                "analyst": executor.submit(nasdaq_analyst_data, symbol),
+                "earnings": executor.submit(nasdaq_earnings_data, symbol),
+            }
+            base = {}
+            for key, future in tasks.items():
+                try:
+                    base[key] = future.result()
+                except Exception:
+                    base[key] = {}
+        with _symbol_cache_lock:
+            _symbol_cache[cache_key] = (time.monotonic(), base)
+
+    result = {key: dict(value) if isinstance(value, dict) else value for key, value in base.items()}
+    valuation = result.setdefault("valuation", {})
+    target = valuation.get("oneYearTarget")
+    valuation["targetUpsidePercent"] = percent_change(target, current_price)
+    result["coverage"] = {
+        "valuation": bool(valuation),
+        "fundamentals": bool(result.get("fundamentals")),
+        "history": bool(result.get("history")),
+        "analyst": bool(result.get("analyst")),
+        "earnings": bool(result.get("earnings")),
+    }
+    return result
+
+
 def nasdaq_news(symbol: str, limit: int = 6) -> list[dict]:
     query = urllib.parse.quote(f"{symbol}|stocks")
     url = f"https://www.nasdaq.com/api/news/topic/articlebysymbol?q={query}&offset=0&limit=20"
@@ -548,6 +887,12 @@ def nasdaq_news(symbol: str, limit: int = 6) -> list[dict]:
             related_symbol = clean(value.split("|", 1)[0]).upper()
             if related_symbol:
                 related.append(related_symbol)
+        mentions_symbol = bool(re.search(
+            rf"(?<![A-Z0-9]){re.escape(symbol)}(?![A-Z0-9])",
+            f"{title} {summary}".upper(),
+        ))
+        if symbol not in related and not mentions_symbol:
+            continue
         if symbol not in related:
             related.append(symbol)
         results.append(evidence_item(
@@ -998,13 +1343,26 @@ def build_analysis_payload(query: str) -> dict:
         ]
 
     symbol_news = []
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(nasdaq_news, quote["symbol"]): quote["symbol"] for quote in quotes[:6]}
+    decision_by_symbol = {}
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {}
+        for quote in quotes[:8]:
+            symbol = quote["symbol"]
+            futures[executor.submit(nasdaq_news, symbol)] = ("news", symbol)
+            futures[executor.submit(nasdaq_decision_data, symbol, quote.get("lastSaleValue"))] = ("decision", symbol)
         for future in as_completed(futures):
+            kind, symbol = futures[future]
             try:
-                symbol_news.extend(future.result())
+                value = future.result()
             except Exception:
-                continue
+                value = [] if kind == "news" else {}
+            if kind == "news":
+                symbol_news.extend(value)
+            else:
+                decision_by_symbol[symbol] = value
+
+    for quote in quotes:
+        quote["decisionData"] = decision_by_symbol.get(quote["symbol"], {})
 
     association_topic_words = set(topic_tokens(query, profile))
     evidence = associate_symbols(
@@ -1026,6 +1384,11 @@ def build_analysis_payload(query: str) -> dict:
         "evidence": evidence,
         "social": social,
         "quotes": quotes,
+        "dataWindows": {
+            "newsHours": FRESHNESS_HOURS,
+            "priceHistoryDays": 365,
+            "financialPeriods": 4,
+        },
         "socialPolicy": {
             "minimumAudience": MIN_SOCIAL_AUDIENCE,
             "platforms": ["YouTube", "Instagram", "X", "Threads", "Facebook"],
@@ -1046,6 +1409,7 @@ def error_payload(query: str, error: str = "") -> dict:
         "social": [],
         "quotes": [],
         "freshness": {"windowHours": FRESHNESS_HOURS, "comparisons": []},
+        "dataWindows": {"newsHours": FRESHNESS_HOURS, "priceHistoryDays": 365, "financialPeriods": 4},
         "socialPolicy": {"minimumAudience": MIN_SOCIAL_AUDIENCE, "verifiedResults": 0},
         "errors": [error] if error else [],
     }
